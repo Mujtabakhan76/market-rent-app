@@ -4,6 +4,7 @@
 """
 
 import streamlit as st
+import requests
 from pymongo import MongoClient
 from datetime import datetime, date
 import pandas as pd
@@ -181,6 +182,33 @@ def year_summary_fast(year, shops, pay_idx):
 def fmt(n):
     return f"{int(n):,}"
 
+def send_whatsapp(mobile, message):
+    """Ultramsg API ke zariye asal WhatsApp message bhejta hai.
+    Streamlit Secrets mein 'ultramsg_instance_id' aur 'ultramsg_token' na hon to
+    khamoshi se skip kar deta hai (koi error nahi dikhata)."""
+    if "ultramsg_instance_id" not in st.secrets or "ultramsg_token" not in st.secrets:
+        return False, "ultramsg_secrets_missing"
+    if not mobile:
+        return False, "no_mobile_number"
+    # Pakistani number ko international format mein badalna (03XXXXXXXXX -> 923XXXXXXXXX)
+    clean = mobile.strip().replace(" ", "").replace("-", "")
+    if clean.startswith("0"):
+        clean = "92" + clean[1:]
+    elif clean.startswith("+92"):
+        clean = clean[1:]
+    elif clean.startswith("92"):
+        pass
+    instance_id = st.secrets["ultramsg_instance_id"]
+    token = st.secrets["ultramsg_token"]
+    url = f"https://api.ultramsg.com/{instance_id}/messages/chat"
+    try:
+        resp = requests.post(url, data={"token": token, "to": clean, "body": message}, timeout=10)
+        if resp.status_code == 200:
+            return True, "sent"
+        return False, f"http_{resp.status_code}"
+    except Exception as e:
+        return False, str(e)
+
 # ============================== Sidebar ==============================
 with st.sidebar:
     st.markdown("### 🏪 مارکیٹ کرایہ مینجمنٹ")
@@ -356,8 +384,15 @@ elif page.endswith("کرایہ وصولی"):
                     new_due = max(p["total_rent"] - amt, 0)
                     msg = f"السلام علیکم\nآپ نے اس ماہ {fmt(amt)} روپے جمع کروا دیے ہیں۔\nبقایا رقم: {fmt(new_due)} روپے\nشکریہ\nمارکیٹ انتظامیہ\n{settings['collector_name']}"
                     if settings.get("sms_enabled", True):
-                        st.toast(f"📱 SMS بھیجا گیا — {s.get('mobile','—')}")
-                        st.code(msg, language=None)
+                        ok, info = send_whatsapp(s.get("mobile",""), msg)
+                        if ok:
+                            st.toast(f"✅ WhatsApp پیغام بھیج دیا گیا — {s.get('mobile','—')}")
+                        elif info == "ultramsg_secrets_missing":
+                            st.info("ℹ️ WhatsApp API ابھی کنیکٹ نہیں ہوئی — Admin کو Secrets میں Ultramsg تفصیلات شامل کرنی ہوں گی۔")
+                            st.code(msg, language=None)
+                        else:
+                            st.warning(f"⚠️ WhatsApp پیغام نہیں جا سکا ({info})۔")
+                            st.code(msg, language=None)
                     st.success("ادائیگی محفوظ کر لی گئی۔")
                     st.rerun()
 
@@ -468,8 +503,9 @@ elif page.endswith("ایڈمن"):
             st.success("پاس ورڈ تبدیل ہو گیا۔")
 
     st.divider()
-    st.subheader("📡 SMS سیٹنگ")
-    sms_on = st.toggle("خودکار SMS بھیجیں", value=settings.get("sms_enabled", True))
+    st.subheader("📡 WhatsApp سیٹنگ")
+    sms_on = st.toggle("خودکار WhatsApp پیغام بھیجیں", value=settings.get("sms_enabled", True))
+    st.caption("پیغام بھیجنے کے لیے Ultramsg WhatsApp API کنیکٹ ہونی ضروری ہے (Streamlit Secrets میں ultramsg_instance_id اور ultramsg_token شامل کریں)۔")
     if sms_on != settings.get("sms_enabled", True):
         update_settings(sms_enabled=sms_on)
         st.rerun()
