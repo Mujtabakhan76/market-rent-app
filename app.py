@@ -52,17 +52,55 @@ st.set_page_config(page_title="مارکیٹ کرایہ مینجمنٹ سسٹم",
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Nastaliq+Urdu:wght@600;700&family=Noto+Naskh+Arabic:wght@400;600;700&display=swap');
-html, body, [class*="css"]  { direction: rtl; font-family: 'Noto Naskh Arabic', sans-serif; }
-h1,h2,h3 { font-family: 'Noto Nastaliq Urdu', serif !important; }
+
+/* Base font, applied narrowly so Streamlit's own layout scaffolding (flex
+   containers, columns, sidebar drawer) is NOT force-flipped to RTL — that
+   was causing overlapping headings and a stray vertical divider line. */
+body, .stMarkdown, .stText, p, span, li {
+  font-family: 'Noto Naskh Arabic', sans-serif;
+}
+
+/* Right-align actual text content without reversing Streamlit's internal
+   flex/column layout (which needs to stay LTR to render correctly). */
+.main .block-container { direction: rtl; }
+.main .block-container div[data-testid="stHorizontalBlock"] { direction: ltr; }
+.main .block-container div[data-testid="stHorizontalBlock"] > div { direction: rtl; }
+
+h1, h2, h3 {
+  font-family: 'Noto Nastaliq Urdu', serif !important;
+  direction: rtl;
+  text-align: right;
+  line-height: 2.1 !important;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  margin: 0 0 6px 0 !important;
+}
+@media (max-width: 640px) {
+  h1 { font-size: 26px !important; }
+  h2 { font-size: 20px !important; }
+  h3 { font-size: 17px !important; }
+}
+
 .stButton>button { border-radius: 10px; font-weight:600; }
+
 div[data-testid="stMetric"] {
   background: linear-gradient(135deg, #eef9f3, #e7f1fb); border:1px solid #d8ece0;
-  border-radius:16px; padding:14px 16px;
+  border-radius:16px; padding:14px 16px; direction: rtl; text-align: right;
 }
+div[data-testid="stMetricLabel"], div[data-testid="stMetricValue"] { text-align: right; width:100%; }
+
 .badge-paid{background:#e6f6ec;color:#2f8a60;padding:4px 12px;border-radius:20px;font-weight:600;font-size:13px;}
 .badge-due{background:#fdecea;color:#c0392b;padding:4px 12px;border-radius:20px;font-weight:600;font-size:13px;}
 .badge-empty{background:#eee;color:#777;padding:4px 12px;border-radius:20px;font-weight:600;font-size:13px;}
-section[data-testid="stSidebar"] { direction: rtl; }
+
+/* Sidebar: keep its own drawer/animation mechanics in LTR (so it slides in
+   correctly on mobile) but right-align the Urdu text inside it. */
+section[data-testid="stSidebar"] { background:#ffffff; }
+section[data-testid="stSidebar"] .stMarkdown,
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] p {
+  direction: rtl; text-align: right;
+}
 </style>
 """, unsafe_allow_html=True)
 
