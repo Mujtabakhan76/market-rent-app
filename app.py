@@ -16,7 +16,11 @@ MONTHS_UR = ["جنوری","فروری","مارچ","اپریل","مئی","جون"
 def get_db():
     uri = st.secrets["mongo_uri"]
     client = MongoClient(uri)
-    return client["market_rent_db"]
+    d = client["market_rent_db"]
+    # Indexes speed up lookups — safe to call every time (no-op if already present)
+    d["payments"].create_index([("shop_id", 1), ("month", 1), ("year", 1)], unique=True)
+    d["shops"].create_index("status")
+    return d
 
 db = get_db()
 shops_col = db["shops"]
@@ -100,18 +104,39 @@ def ensure_payment(shop, month, year):
         p["_id"] = res.inserted_id
     return p
 
-def month_summary(month, year):
+# ============================== Bulk Data Loading (fast) ==============================
+@st.cache_data(ttl=20)
+def load_all_shops():
+    return list(shops_col.find({}))
+
+@st.cache_data(ttl=20)
+def load_all_payments():
+    return list(payments_col.find({}))
+
+def invalidate_cache():
+    load_all_shops.clear()
+    load_all_payments.clear()
+
+def build_payment_index(payments):
+    idx = {}
+    for p in payments:
+        idx[(p["shop_id"], p["month"], p["year"])] = p
+    return idx
+
+def month_summary_fast(month, year, shops, pay_idx):
     total, collected = 0, 0
-    for s in shops_col.find({"status": "rented"}):
-        p = get_payment(s["_id"], month, year)
+    for s in shops:
+        if s["status"] != "rented":
+            continue
+        p = pay_idx.get((s["_id"], month, year))
         total += p["total_rent"] if p else s["monthly_rent"]
         collected += p["paid_amount"] if p else 0
     return total, collected, max(total - collected, 0)
 
-def year_summary(year):
+def year_summary_fast(year, shops, pay_idx):
     total, collected = 0, 0
     for m in range(1, 13):
-        t, c, _ = month_summary(m, year)
+        t, c, _ = month_summary_fast(m, year, shops, pay_idx)
         total += t; collected += c
     return total, collected, max(total - collected, 0)
 
@@ -132,16 +157,19 @@ with st.sidebar:
         st.rerun()
 
 today = date.today()
+all_shops_data = load_all_shops()
+all_payments_data = load_all_payments()
+pay_idx = build_payment_index(all_payments_data)
 
 # ============================== Dashboard ==============================
 if page.endswith("ڈیش بورڈ"):
     st.title("🏠 ڈیش بورڈ")
-    shops = all_shops()
+    shops = all_shops_data
     total_shops = len(shops)
     rented = len([s for s in shops if s["status"] == "rented"])
     empty = total_shops - rented
-    mt, mc, md = month_summary(today.month, today.year)
-    yt, yc, yd = year_summary(today.year)
+    mt, mc, md = month_summary_fast(today.month, today.year, shops, pay_idx)
+    yt, yc, yd = year_summary_fast(today.year, shops, pay_idx)
 
     c1, c2, c3 = st.columns(3)
     c1.metric("کل دکانیں", total_shops)
@@ -165,7 +193,7 @@ if page.endswith("ڈیش بورڈ"):
             yy = y
             while mm <= 0:
                 mm += 12; yy -= 1
-            _, c, _ = month_summary(mm, yy)
+            _, c, _ = month_summary_fast(mm, yy, shops, pay_idx)
             labels.append(MONTHS_UR[mm-1]); vals.append(c)
         fig = go.Figure(go.Bar(x=labels, y=vals, marker_color="#3fa373"))
         fig.update_layout(height=320, margin=dict(l=10,r=10,t=10,b=10))
@@ -182,7 +210,7 @@ if page.endswith("ڈیش بورڈ"):
         st.subheader("📊 سالانہ آمدنی")
         yl, yvals = [], []
         for yy in range(today.year-4, today.year+1):
-            _, c, _ = year_summary(yy)
+            _, c, _ = year_summary_fast(yy, shops, pay_idx)
             yl.append(str(yy)); yvals.append(c)
         fig3 = go.Figure(go.Bar(x=yl, y=yvals, marker_color="#2f6fb0"))
         fig3.update_layout(height=300, margin=dict(l=10,r=10,t=10,b=10))
@@ -209,6 +237,7 @@ elif page.endswith("دکانیں"):
         if st.button("محفوظ کریں", key="add_shop"):
             if number and tenant and mobile and rent > 0:
                 shops_col.insert_one({"number":number,"name":name or "—","tenant_name":tenant,"mobile":mobile,"cnic":cnic,"monthly_rent":rent,"status":status})
+                invalidate_cache()
                 st.success(f"دکان نمبر {number} شامل کر دی گئی۔")
                 st.rerun()
             else:
@@ -216,7 +245,7 @@ elif page.endswith("دکانیں"):
 
     st.divider()
     q = st.text_input("🔎 تلاش کریں (دکان نمبر / نام / موبائل)")
-    shops = all_shops()
+    shops = all_shops_data
     if q:
         shops = [s for s in shops if q.lower() in s["number"].lower() or q.lower() in s["tenant_name"].lower() or q in s.get("mobile","")]
 
@@ -233,6 +262,7 @@ elif page.endswith("دکانیں"):
             if c4.button("🗑️ حذف", key=f"del_{s['_id']}"):
                 shops_col.delete_one({"_id": s["_id"]})
                 payments_col.delete_many({"shop_id": s["_id"]})
+                invalidate_cache()
                 st.rerun()
             if st.session_state.get(f"editing_{s['_id']}"):
                 with st.form(f"form_{s['_id']}"):
@@ -243,6 +273,7 @@ elif page.endswith("دکانیں"):
                     ns = st.selectbox("حالت", ["rented","empty"], index=0 if s["status"]=="rented" else 1, format_func=lambda x:"کرایہ پر" if x=="rented" else "خالی")
                     if st.form_submit_button("اپڈیٹ کریں"):
                         shops_col.update_one({"_id": s["_id"]}, {"$set": {"name":nn,"tenant_name":nt,"mobile":nm,"monthly_rent":nr,"status":ns}})
+                        invalidate_cache()
                         st.session_state[f"editing_{s['_id']}"] = False
                         st.rerun()
 
@@ -254,8 +285,12 @@ elif page.endswith("کرایہ وصولی"):
     year = c2.selectbox("سال", list(range(today.year-3, today.year+2)), index=3)
 
     rows = []
-    for s in shops_col.find({"status":"rented"}):
-        p = ensure_payment(s, month, year)
+    for s in all_shops_data:
+        if s["status"] != "rented":
+            continue
+        p = pay_idx.get((s["_id"], month, year))
+        if not p:
+            p = ensure_payment(s, month, year)
         due = max(p["total_rent"] - p["paid_amount"], 0)
         rows.append({"شاپ":s, "پیمنٹ":p, "بقایا":due})
 
@@ -279,6 +314,7 @@ elif page.endswith("کرایہ وصولی"):
                     payments_col.update_one({"_id": p["_id"]}, {"$set": {
                         "paid_amount": amt, "method": mth, "payment_date": str(pdate)
                     }})
+                    invalidate_cache()
                     new_due = max(p["total_rent"] - amt, 0)
                     msg = f"السلام علیکم\nآپ نے اس ماہ {fmt(amt)} روپے جمع کروا دیے ہیں۔\nبقایا رقم: {fmt(new_due)} روپے\nشکریہ\nمارکیٹ انتظامیہ\n{settings['collector_name']}"
                     if settings.get("sms_enabled", True):
@@ -290,12 +326,12 @@ elif page.endswith("کرایہ وصولی"):
 # ============================== Ledger ==============================
 elif page.endswith("دکان دار کھاتہ"):
     st.title("📒 دکان دار کھاتہ")
-    shops = all_shops()
+    shops = all_shops_data
     names = {f"دکان #{s['number']} — {s['tenant_name']}": s for s in shops}
     if names:
         pick = st.selectbox("دکان دار منتخب کریں", list(names.keys()))
         s = names[pick]
-        history = list(payments_col.find({"shop_id": s["_id"]}).sort([("year",-1),("month",-1)]))
+        history = sorted([p for p in all_payments_data if p["shop_id"] == s["_id"]], key=lambda p:(p["year"], p["month"]), reverse=True)
         total_rent = sum(p["total_rent"] for p in history)
         total_paid = sum(p["paid_amount"] for p in history)
         total_due = max(total_rent - total_paid, 0)
@@ -326,9 +362,9 @@ elif page.endswith("رپورٹس"):
     st.title("📊 رپورٹس")
     filt = st.radio("فلٹر", ["اس مہینے","اس سال"], horizontal=True)
     if filt == "اس مہینے":
-        t, c, d = month_summary(today.month, today.year)
+        t, c, d = month_summary_fast(today.month, today.year, all_shops_data, pay_idx)
     else:
-        t, c, d = year_summary(today.year)
+        t, c, d = year_summary_fast(today.year, all_shops_data, pay_idx)
     c1,c2,c3 = st.columns(3)
     c1.metric("کل بننے والا کرایہ", f"Rs {fmt(t)}")
     c2.metric("کل وصول شدہ", f"Rs {fmt(c)}")
@@ -337,8 +373,10 @@ elif page.endswith("رپورٹس"):
     st.divider()
     colL, colR = st.columns(2)
     defaulters, paid_up = [], []
-    for s in shops_col.find({"status":"rented"}):
-        p = get_payment(s["_id"], today.month, today.year)
+    for s in all_shops_data:
+        if s["status"] != "rented":
+            continue
+        p = pay_idx.get((s["_id"], today.month, today.year))
         total = p["total_rent"] if p else s["monthly_rent"]
         paid = p["paid_amount"] if p else 0
         due = max(total - paid, 0)
@@ -358,7 +396,7 @@ elif page.endswith("سرچ"):
     st.title("🔍 سرچ")
     q = st.text_input("دکان نمبر، دکان دار کا نام یا موبائل نمبر لکھیں")
     if q:
-        results = [s for s in all_shops() if q.lower() in s["number"].lower() or q.lower() in s["tenant_name"].lower() or q in s.get("mobile","")]
+        results = [s for s in all_shops_data if q.lower() in s["number"].lower() or q.lower() in s["tenant_name"].lower() or q in s.get("mobile","")]
         if results:
             for s in results:
                 with st.container(border=True):
