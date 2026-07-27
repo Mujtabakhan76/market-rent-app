@@ -21,18 +21,23 @@ def get_db():
     # Indexes speed up lookups — safe to call every time (no-op if already present)
     d["payments"].create_index([("shop_id", 1), ("month", 1), ("year", 1)], unique=True)
     d["shops"].create_index("status")
+    d["expenses"].create_index([("date", 1)])
     return d
 
 db = get_db()
 shops_col = db["shops"]
 payments_col = db["payments"]
 settings_col = db["settings"]
+expenses_col = db["expenses"]
 
 def get_settings():
     s = settings_col.find_one({"_id": "config"})
     if not s:
-        s = {"_id": "config", "collector_name": "مولانا عدنان صاحب", "admin_password": "admin123", "sms_enabled": True}
+        s = {"_id": "config", "market_name": "روشن مارکیٹ", "collector_name": "مولانا عدنان صاحب", "admin_password": "admin123", "sms_enabled": True}
         settings_col.insert_one(s)
+    if "market_name" not in s:
+        settings_col.update_one({"_id": "config"}, {"$set": {"market_name": "روشن مارکیٹ"}})
+        s["market_name"] = "روشن مارکیٹ"
     return s
 
 def update_settings(**kwargs):
@@ -48,7 +53,8 @@ def seed_demo_if_empty():
         shops_col.insert_many(demo)
 
 # ============================== Page Setup ==============================
-st.set_page_config(page_title="مارکیٹ کرایہ مینجمنٹ سسٹم", page_icon="🏪", layout="wide")
+settings = get_settings()
+st.set_page_config(page_title=f"{settings['market_name']} کرایہ مینجمنٹ سسٹم", page_icon="🏪", layout="wide")
 
 st.markdown("""
 <style>
@@ -106,7 +112,6 @@ section[data-testid="stSidebar"] p {
 """, unsafe_allow_html=True)
 
 seed_demo_if_empty()
-settings = get_settings()
 
 # ============================== Login ==============================
 if "logged_in" not in st.session_state:
@@ -115,7 +120,7 @@ if "logged_in" not in st.session_state:
 if not st.session_state.logged_in:
     col1, col2, col3 = st.columns([1,1.2,1])
     with col2:
-        st.markdown("<h1 style='text-align:center;'>🏪 مارکیٹ کرایہ مینجمنٹ سسٹم</h1>", unsafe_allow_html=True)
+        st.markdown(f"<h1 style='text-align:center;'>🏪 {settings['market_name']} کرایہ مینجمنٹ سسٹم</h1>", unsafe_allow_html=True)
         st.markdown("<p style='text-align:center;color:#666;'>ایڈمن رسائی کے لیے پاس ورڈ درج کریں</p>", unsafe_allow_html=True)
         pw = st.text_input("پاس ورڈ", type="password")
         if st.button("داخل ہوں 🔐", use_container_width=True):
@@ -152,9 +157,14 @@ def load_all_shops():
 def load_all_payments():
     return list(payments_col.find({}))
 
+@st.cache_data(ttl=20)
+def load_all_expenses():
+    return list(expenses_col.find({}).sort("date", -1))
+
 def invalidate_cache():
     load_all_shops.clear()
     load_all_payments.clear()
+    load_all_expenses.clear()
 
 def build_payment_index(payments):
     idx = {}
@@ -211,11 +221,11 @@ def send_whatsapp(mobile, message):
 
 # ============================== Sidebar ==============================
 with st.sidebar:
-    st.markdown("### 🏪 مارکیٹ کرایہ مینجمنٹ")
+    st.markdown(f"### 🏪 {settings['market_name']} کرایہ مینجمنٹ")
     st.info(f"👳 کرایہ وصول کرنے والا:\n**{settings['collector_name']}**")
     page = st.radio("مینیو", [
         "🏠 ڈیش بورڈ", "🏬 دکانیں", "💰 کرایہ وصولی", "📒 دکان دار کھاتہ",
-        "📊 رپورٹس", "🔍 سرچ", "⚙️ ایڈمن"
+        "🧾 اخراجات", "📊 رپورٹس", "🔍 سرچ", "⚙️ ایڈمن"
     ], label_visibility="collapsed")
     st.divider()
     if st.button("لاگ آؤٹ ⏻", use_container_width=True):
@@ -225,11 +235,13 @@ with st.sidebar:
 today = date.today()
 all_shops_data = load_all_shops()
 all_payments_data = load_all_payments()
+all_expenses_data = load_all_expenses()
 pay_idx = build_payment_index(all_payments_data)
+total_expenses_all_time = sum(e["amount"] for e in all_expenses_data)
 
 # ============================== Dashboard ==============================
 if page.endswith("ڈیش بورڈ"):
-    st.title("🏠 ڈیش بورڈ")
+    st.title(f"🏠 {settings['market_name']} — ڈیش بورڈ")
     shops = all_shops_data
     total_shops = len(shops)
     rented = len([s for s in shops if s["status"] == "rented"])
@@ -247,6 +259,13 @@ if page.endswith("ڈیش بورڈ"):
     c1.metric("اس سال کا کل کرایہ", f"Rs {fmt(yt)}")
     c2.metric("اس سال وصول شدہ", f"Rs {fmt(yc)}")
     c3.metric("اس سال بقایا", f"Rs {fmt(yd)}")
+
+    st.divider()
+    c1, c2 = st.columns(2)
+    total_collected_all_time = sum(p["paid_amount"] for p in all_payments_data)
+    c1.metric("💸 کل اخراجات (ہمیشہ سے)", f"Rs {fmt(total_expenses_all_time)}")
+    net_after_expenses = total_collected_all_time - total_expenses_all_time
+    c2.metric("💰 خالص بچت (وصولی - اخراجات)", f"Rs {fmt(net_after_expenses)}")
 
     st.divider()
     colA, colB = st.columns(2)
@@ -382,7 +401,17 @@ elif page.endswith("کرایہ وصولی"):
                     }})
                     invalidate_cache()
                     new_due = max(p["total_rent"] - amt, 0)
-                    msg = f"السلام علیکم\nآپ نے اس ماہ {fmt(amt)} روپے جمع کروا دیے ہیں۔\nبقایا رقم: {fmt(new_due)} روپے\nشکریہ\nمارکیٹ انتظامیہ\n{settings['collector_name']}"
+                    msg = (
+                        f"السلام علیکم\n\n"
+                        f"تاریخ: {pdate.strftime('%d-%m-%Y')}\n"
+                        f"دکان نمبر: {s['number']}\n"
+                        f"دکان کا نام: {s['name']}\n"
+                        f"دکان دار کا نام: {s['tenant_name']}\n\n"
+                        f"وصول شدہ رقم: {fmt(amt)} روپے\n"
+                        f"باقی رقم: {fmt(new_due)} روپے\n\n"
+                        f"کرایہ وصول کرنے والا: {settings['collector_name']}\n\n"
+                        f"شکریہ\n{settings['market_name']}"
+                    )
                     if settings.get("sms_enabled", True):
                         ok, info = send_whatsapp(s.get("mobile",""), msg)
                         if ok:
@@ -425,10 +454,100 @@ elif page.endswith("دکان دار کھاتہ"):
             st.dataframe(df, use_container_width=True, hide_index=True)
             csv = df.to_csv(index=False).encode("utf-8-sig")
             st.download_button("⬇️ کھاتہ CSV ڈاؤن لوڈ کریں", csv, f"ledger_{s['number']}.csv", "text/csv")
+
+            st.divider()
+            st.subheader("📄 دستاویز (Document) ڈاؤن لوڈ کریں")
+            period = st.radio("مدت منتخب کریں", ["ایک مہینہ", "پورا سال", "مکمل کھاتہ"], horizontal=True, key="doc_period")
+            if period == "ایک مہینہ":
+                mth_pick = st.selectbox("مہینہ", list(range(1,13)), index=today.month-1, format_func=lambda m: MONTHS_UR[m-1], key="doc_month")
+                yr_pick = st.selectbox("سال", sorted(set(p["year"] for p in history), reverse=True) or [today.year], key="doc_month_year")
+                doc_rows = [p for p in history if p["month"]==mth_pick and p["year"]==yr_pick]
+                period_label = f"{MONTHS_UR[mth_pick-1]} {yr_pick}"
+            elif period == "پورا سال":
+                yr_pick2 = st.selectbox("سال", sorted(set(p["year"] for p in history), reverse=True) or [today.year], key="doc_year_only")
+                doc_rows = [p for p in history if p["year"]==yr_pick2]
+                period_label = f"سال {yr_pick2}"
+            else:
+                doc_rows = history
+                period_label = "مکمل کھاتہ"
+
+            doc_rows_sorted = sorted(doc_rows, key=lambda p:(p["year"], p["month"]))
+            rows_html = "".join([
+                f"<tr><td>{MONTHS_UR[p['month']-1]} {p['year']}</td><td>{fmt(p['total_rent'])}</td>"
+                f"<td>{fmt(p['paid_amount'])}</td><td>{fmt(max(p['total_rent']-p['paid_amount'],0))}</td>"
+                f"<td>{p.get('payment_date') or '—'}</td><td>{p['method']}</td></tr>"
+                for p in doc_rows_sorted
+            ]) or "<tr><td colspan='6' style='text-align:center;'>اس مدت میں کوئی ریکارڈ نہیں</td></tr>"
+            doc_total = sum(p["total_rent"] for p in doc_rows_sorted)
+            doc_paid = sum(p["paid_amount"] for p in doc_rows_sorted)
+            doc_due = max(doc_total - doc_paid, 0)
+
+            ledger_html = f"""<!DOCTYPE html><html lang="ur" dir="rtl"><head><meta charset="UTF-8">
+<style>
+body{{font-family:'Noto Naskh Arabic','Segoe UI',sans-serif; direction:rtl; padding:30px; color:#173226;}}
+h1{{color:#2f8a60; font-size:22px; margin-bottom:2px;}}
+.sub{{color:#666; margin-bottom:18px;}}
+table{{width:100%; border-collapse:collapse; margin-top:16px;}}
+th,td{{border:1px solid #ccc; padding:8px 10px; text-align:right; font-size:13px;}}
+th{{background:#eef9f3;}}
+.info{{margin-bottom:6px; font-size:14px;}}
+.totals{{margin-top:18px; font-size:15px; font-weight:bold;}}
+.stamp{{margin-top:40px; font-size:13px; color:#666;}}
+</style></head><body>
+<h1>🏪 {settings['market_name']} — دکان دار کھاتہ</h1>
+<div class="sub">مدت: {period_label} — بنایا گیا: {today.strftime('%d-%m-%Y')}</div>
+<div class="info"><b>دکان نمبر:</b> {s['number']} &nbsp; | &nbsp; <b>دکان کا نام:</b> {s['name']}</div>
+<div class="info"><b>دکان دار کا نام:</b> {s['tenant_name']} &nbsp; | &nbsp; <b>موبائل:</b> {s.get('mobile','—')}</div>
+<div class="info"><b>ماہانہ کرایہ:</b> Rs {fmt(s['monthly_rent'])}</div>
+<table><thead><tr><th>مہینہ</th><th>کل کرایہ</th><th>وصول شدہ</th><th>بقایا</th><th>تاریخ</th><th>طریقہ</th></tr></thead>
+<tbody>{rows_html}</tbody></table>
+<div class="totals">کل کرایہ: Rs {fmt(doc_total)} &nbsp; | &nbsp; کل وصول شدہ: Rs {fmt(doc_paid)} &nbsp; | &nbsp; کل بقایا: Rs {fmt(doc_due)}</div>
+<div class="stamp">کرایہ وصول کرنے والا: {settings['collector_name']}</div>
+</body></html>"""
+            st.download_button(f"⬇️ {period_label} کی دستاویز ڈاؤن لوڈ کریں", ledger_html.encode("utf-8"),
+                                f"kata_{s['number']}_{period_label.replace(' ','_')}.html", "text/html")
+            st.caption("فائل کھلنے کے بعد براؤزر میں Print کریں اور 'Save as PDF' منتخب کریں تاکہ PDF بن جائے۔")
         else:
             st.info("ابھی تک کوئی ادائیگی درج نہیں ہوئی۔")
     else:
         st.info("کوئی دکان موجود نہیں۔")
+
+# ============================== Expenses ==============================
+elif page.endswith("اخراجات"):
+    st.title("🧾 اخراجات")
+    st.caption("جب کرایہ کی رقم میں سے کوئی خرچہ کیا جائے (مرمت، بجلی، صفائی وغیرہ) تو یہاں درج کریں — یہ خودکار طور پر خالص بچت میں سے منہا ہو جائے گا۔")
+
+    with st.expander("➕ نیا خرچہ شامل کریں"):
+        c1, c2 = st.columns(2)
+        desc = c1.text_input("خرچے کی تفصیل (مثلاً: مرمت، بجلی کا بل)")
+        amt2 = c2.number_input("رقم", min_value=0, step=100)
+        edate = st.date_input("تاریخ", value=today, key="expense_date")
+        if st.button("محفوظ کریں", key="add_expense"):
+            if desc and amt2 > 0:
+                expenses_col.insert_one({"description": desc, "amount": amt2, "date": str(edate)})
+                invalidate_cache()
+                st.success("خرچہ محفوظ کر لیا گیا۔")
+                st.rerun()
+            else:
+                st.error("براہ کرم تفصیل اور رقم درج کریں۔")
+
+    st.divider()
+    st.metric("💸 کل اخراجات (ہمیشہ سے)", f"Rs {fmt(total_expenses_all_time)}")
+    st.divider()
+
+    if all_expenses_data:
+        for e in all_expenses_data:
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([3,1.5,1])
+                c1.markdown(f"**{e['description']}**")
+                c1.caption(f"📅 {e.get('date','—')}")
+                c2.markdown(f"**Rs {fmt(e['amount'])}**")
+                if c3.button("🗑️ حذف", key=f"del_exp_{e['_id']}"):
+                    expenses_col.delete_one({"_id": e["_id"]})
+                    invalidate_cache()
+                    st.rerun()
+    else:
+        st.info("ابھی تک کوئی خرچہ درج نہیں ہوا۔")
 
 # ============================== Reports ==============================
 elif page.endswith("رپورٹس"):
@@ -482,6 +601,14 @@ elif page.endswith("سرچ"):
 elif page.endswith("ایڈمن"):
     st.title("⚙️ ایڈمن پینل")
 
+    st.subheader("🏪 مارکیٹ کا نام")
+    new_market = st.text_input("مارکیٹ کا نام", value=settings["market_name"])
+    if st.button("مارکیٹ کا نام محفوظ کریں"):
+        update_settings(market_name=new_market)
+        st.success("محفوظ ہو گیا — صفحہ ری لوڈ ہو رہا ہے۔")
+        st.rerun()
+
+    st.divider()
     st.subheader("👤 کرایہ وصول کرنے والا")
     new_name = st.text_input("نام", value=settings["collector_name"])
     if st.button("نام محفوظ کریں"):
