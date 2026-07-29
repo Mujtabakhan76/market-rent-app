@@ -33,11 +33,19 @@ expenses_col = db["expenses"]
 def get_settings():
     s = settings_col.find_one({"_id": "config"})
     if not s:
-        s = {"_id": "config", "market_name": "روشن مارکیٹ", "collector_name": "مولانا عدنان صاحب", "admin_password": "admin123", "sms_enabled": True}
+        now = datetime.now()
+        s = {"_id": "config", "market_name": "روشن مارکیٹ", "collector_name": "مولانا عدنان صاحب",
+             "admin_password": "admin123", "sms_enabled": True,
+             "active_month": now.month, "active_year": now.year}
         settings_col.insert_one(s)
     if "market_name" not in s:
         settings_col.update_one({"_id": "config"}, {"$set": {"market_name": "روشن مارکیٹ"}})
         s["market_name"] = "روشن مارکیٹ"
+    if "active_month" not in s or "active_year" not in s:
+        now = datetime.now()
+        patch = {"active_month": now.month, "active_year": now.year}
+        settings_col.update_one({"_id": "config"}, {"$set": patch})
+        s.update(patch)
     return s
 
 def update_settings(**kwargs):
@@ -88,7 +96,45 @@ h1, h2, h3 {
   h3 { font-size: 17px !important; }
 }
 
-.stButton>button { border-radius: 10px; font-weight:600; }
+.stButton>button {
+  border-radius: 12px;
+  font-weight: 600;
+  min-height: 46px;
+  font-size: 15px;
+  transition: all 0.15s ease;
+  border: 2px solid transparent;
+}
+.stButton>button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+}
+.stButton>button:active {
+  transform: translateY(0px);
+}
+/* Primary (active/selected) buttons — clearly colored so the user can see
+   what's currently selected or turned on */
+.stButton>button[kind="primary"] {
+  background: linear-gradient(135deg, #3fa373, #2f8a60) !important;
+  border-color: #256e4d !important;
+  color: #fff !important;
+}
+/* Sidebar nav buttons — extra big & clearly tappable */
+section[data-testid="stSidebar"] .stButton>button {
+  min-height: 50px;
+  font-size: 16px;
+  text-align: right;
+  justify-content: flex-end;
+}
+/* Expander headers — bigger touch target */
+.streamlit-expanderHeader, div[data-testid="stExpander"] summary {
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  min-height: 48px !important;
+  display: flex !important;
+  align-items: center !important;
+}
+/* Toggle switches — bigger for mobile tapping */
+div[data-testid="stToggle"] { transform: scale(1.15); transform-origin: right center; }
 
 div[data-testid="stMetric"] {
   background: linear-gradient(135deg, #eef9f3, #e7f1fb); border:1px solid #d8ece0;
@@ -220,13 +266,23 @@ def send_whatsapp(mobile, message):
         return False, str(e)
 
 # ============================== Sidebar ==============================
+PAGES = [
+    "🏠 ڈیش بورڈ", "🏬 دکانیں", "💰 کرایہ وصولی", "📒 دکان دار کھاتہ",
+    "🧾 اخراجات", "📊 رپورٹس", "🔍 سرچ", "⚙️ ایڈمن"
+]
+if "current_page" not in st.session_state:
+    st.session_state.current_page = PAGES[0]
+
 with st.sidebar:
     st.markdown(f"### 🏪 {settings['market_name']} کرایہ مینجمنٹ")
     st.info(f"👳 کرایہ وصول کرنے والا:\n**{settings['collector_name']}**")
-    page = st.radio("مینیو", [
-        "🏠 ڈیش بورڈ", "🏬 دکانیں", "💰 کرایہ وصولی", "📒 دکان دار کھاتہ",
-        "🧾 اخراجات", "📊 رپورٹس", "🔍 سرچ", "⚙️ ایڈمن"
-    ], label_visibility="collapsed")
+    for p_name in PAGES:
+        is_active = st.session_state.current_page == p_name
+        if st.button(p_name, key=f"nav_{p_name}", use_container_width=True,
+                     type="primary" if is_active else "secondary"):
+            st.session_state.current_page = p_name
+            st.rerun()
+    page = st.session_state.current_page
     st.divider()
     if st.button("لاگ آؤٹ ⏻", use_container_width=True):
         st.session_state.logged_in = False
@@ -246,8 +302,11 @@ if page.endswith("ڈیش بورڈ"):
     total_shops = len(shops)
     rented = len([s for s in shops if s["status"] == "rented"])
     empty = total_shops - rented
-    mt, mc, md = month_summary_fast(today.month, today.year, shops, pay_idx)
-    yt, yc, yd = year_summary_fast(today.year, shops, pay_idx)
+    active_month = settings.get("active_month", today.month)
+    active_year = settings.get("active_year", today.year)
+    st.caption(f"📌 موجودہ مہینہ (ڈیش بورڈ): **{MONTHS_UR[active_month-1]} {active_year}** — یہ 'کرایہ وصولی' صفحے سے تبدیل کیا جا سکتا ہے۔")
+    mt, mc, md = month_summary_fast(active_month, active_year, shops, pay_idx)
+    yt, yc, yd = year_summary_fast(active_year, shops, pay_idx)
 
     c1, c2, c3 = st.columns(3)
     c1.metric("کل دکانیں", total_shops)
@@ -272,7 +331,7 @@ if page.endswith("ڈیش بورڈ"):
     with colA:
         st.subheader("📈 ماہانہ آمدنی (پچھلے 12 مہینے)")
         labels, vals = [], []
-        y, m = today.year, today.month
+        y, m = active_year, active_month
         for i in range(11, -1, -1):
             mm = m - i
             yy = y
@@ -365,14 +424,34 @@ elif page.endswith("دکانیں"):
 # ============================== Rent Collection ==============================
 elif page.endswith("کرایہ وصولی"):
     st.title("💰 کرایہ وصولی")
+    active_month = settings.get("active_month", today.month)
+    active_year = settings.get("active_year", today.year)
+    all_months = list(range(1,13))
+    all_years = list(range(today.year-3, today.year+2))
     c1, c2 = st.columns(2)
-    month = c1.selectbox("مہینہ", list(range(1,13)), index=today.month-1, format_func=lambda m: MONTHS_UR[m-1])
-    year = c2.selectbox("سال", list(range(today.year-3, today.year+2)), index=3)
+    month = c1.selectbox("مہینہ", all_months, index=all_months.index(active_month), format_func=lambda m: MONTHS_UR[m-1])
+    year = c2.selectbox("سال", all_years, index=all_years.index(active_year) if active_year in all_years else 3)
+
+    is_current = (month == active_month and year == active_year)
+    if is_current:
+        st.success(f"📌 یہ فی الحال ڈیش بورڈ کا 'موجودہ مہینہ' ہے۔")
+    else:
+        if st.button(f"📌 {MONTHS_UR[month-1]} {year} کو ڈیش بورڈ کا موجودہ مہینہ بنائیں", type="primary"):
+            update_settings(active_month=month, active_year=year)
+            st.success("محفوظ ہو گیا — ڈیش بورڈ اب اسی مہینے کا ڈیٹا دکھائے گا۔")
+            st.rerun()
+    st.caption("پرانے مہینے کا کرایہ بھی یہاں سے کسی بھی وقت درج کیا جا سکتا ہے — بس اوپر سے مہینہ/سال منتخب کریں۔")
+
+    q_rent = st.text_input("🔎 دکان تلاش کریں (دکان نمبر / دکان دار کا نام / موبائل)", key="rent_search")
 
     rows = []
     for s in all_shops_data:
         if s["status"] != "rented":
             continue
+        if q_rent:
+            ql = q_rent.lower()
+            if ql not in s["number"].lower() and ql not in s["tenant_name"].lower() and ql not in s.get("mobile",""):
+                continue
         p = pay_idx.get((s["_id"], month, year))
         if not p:
             p = ensure_payment(s, month, year)
@@ -380,7 +459,7 @@ elif page.endswith("کرایہ وصولی"):
         rows.append({"شاپ":s, "پیمنٹ":p, "بقایا":due})
 
     if not rows:
-        st.info("کوئی کرایہ دار دکان موجود نہیں۔")
+        st.info("کوئی دکان نہیں ملی۔")
     for r in rows:
         s, p, due = r["شاپ"], r["پیمنٹ"], r["بقایا"]
         with st.container(border=True):
@@ -391,22 +470,32 @@ elif page.endswith("کرایہ وصولی"):
             c4.markdown(f"بقایا\n\n**Rs {fmt(due)}**")
             status_html = "<span class='badge-paid'>✔ ادا شدہ</span>" if due<=0 else "<span class='badge-due'>بقایا</span>"
             c5.markdown(status_html, unsafe_allow_html=True)
-            with st.expander("💰 وصول کریں"):
+
+            show_key = f"show_pay_{p['_id']}"
+            if show_key not in st.session_state:
+                st.session_state[show_key] = False
+
+            btn_label = "🔽 وصول کریں (بند کریں)" if st.session_state[show_key] else "💰 وصول کریں"
+            if st.button(btn_label, key=f"toggle_{p['_id']}", use_container_width=True,
+                         type="primary" if st.session_state[show_key] else "secondary"):
+                st.session_state[show_key] = not st.session_state[show_key]
+                st.rerun()
+
+            if st.session_state[show_key]:
                 amt = st.number_input("وصول شدہ رقم", min_value=0, value=int(p["paid_amount"]), step=500, key=f"amt_{p['_id']}")
                 mth = st.selectbox("ادائیگی کا طریقہ", ["نقد","بینک","ایزی پیسہ","جاز کیش"], key=f"mth_{p['_id']}")
                 pdate = st.date_input("تاریخ", value=today, key=f"date_{p['_id']}")
-                if st.button("محفوظ کریں ✅", key=f"save_{p['_id']}"):
+                if st.button("محفوظ کریں ✅", key=f"save_{p['_id']}", type="primary", use_container_width=True):
                     payments_col.update_one({"_id": p["_id"]}, {"$set": {
                         "paid_amount": amt, "method": mth, "payment_date": str(pdate)
                     }})
                     invalidate_cache()
                     new_due = max(p["total_rent"] - amt, 0)
                     msg = (
-                        f"السلام علیکم\n\n"
+                        f"السلام علیکم {s['tenant_name']} صاحب\n\n"
                         f"تاریخ: {pdate.strftime('%d-%m-%Y')}\n"
                         f"دکان نمبر: {s['number']}\n"
-                        f"دکان کا نام: {s['name']}\n"
-                        f"دکان دار کا نام: {s['tenant_name']}\n\n"
+                        f"دکان کا نام: {s['name']}\n\n"
                         f"وصول شدہ رقم: {fmt(amt)} روپے\n"
                         f"باقی رقم: {fmt(new_due)} روپے\n\n"
                         f"کرایہ وصول کرنے والا: {settings['collector_name']}\n\n"
@@ -422,6 +511,7 @@ elif page.endswith("کرایہ وصولی"):
                         else:
                             st.warning(f"⚠️ WhatsApp پیغام نہیں جا سکا ({info})۔")
                             st.code(msg, language=None)
+                    st.session_state[show_key] = False
                     st.success("ادائیگی محفوظ کر لی گئی۔")
                     st.rerun()
 
